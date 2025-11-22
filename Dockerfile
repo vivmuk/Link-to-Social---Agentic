@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Make start script executable
+RUN chmod +x start.sh
+
 # Set default port (Railway will override PORT env var at runtime)
 ENV PORT=8000
 
@@ -27,7 +30,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD sh -c "python -c \"import requests; requests.get('http://localhost:${PORT:-8000}/health')\"" || exit 1
 
-# Run the application
-# Use sh -c to ensure environment variable expansion
-CMD sh -c "uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}"
+# Run the application using the start script
+CMD ["./start.sh"]
 

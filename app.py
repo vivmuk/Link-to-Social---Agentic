@@ -826,6 +826,11 @@ async def root():
                         body: JSON.stringify({ url: url })
                     });
                     
+                    if (!response.ok) {
+                        const errorData = await response.json().catch(() => ({ detail: `HTTP ${response.status}: ${response.statusText}` }));
+                        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    
                     const data = await response.json();
                     
                     if (data.status === 'success') {
@@ -833,10 +838,11 @@ async def root():
                         displayResults(data);
                         window.scrollTo({ top: document.getElementById('results').offsetTop - 100, behavior: 'smooth' });
                     } else {
-                        showError(data.error || 'An error occurred');
+                        showError(data.error || data.detail || 'An error occurred');
                     }
                 } catch (error) {
-                    showError('Failed to process URL: ' + error.message);
+                    console.error('Error processing URL:', error);
+                    showError('Failed to process URL: ' + (error.message || error));
                 } finally {
                     submitBtn.disabled = false;
                     loading.classList.remove('active');
@@ -912,21 +918,36 @@ async def process_url(request: URLRequest):
         result = await coordinator.process_url(url_str)
         
         if result.get("status") == "error":
+            error_message = result.get("error", "Processing failed")
+            logger.error(f"Workflow error: {error_message}")
             raise HTTPException(
                 status_code=400,
-                detail=result.get("error", "Processing failed")
+                detail=error_message
             )
         
         return JSONResponse(content=result)
         
-    except HTTPException:
+    except HTTPException as e:
+        logger.error(f"HTTP Exception: {e.detail}")
         raise
+    except ValueError as e:
+        logger.error(f"Validation error: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid URL format: {str(e)}"
+        )
     except Exception as e:
-        logger.error(f"Error processing URL: {str(e)}")
+        logger.error(f"Error processing URL: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error: {str(e)}"
         )
+
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Return empty favicon to prevent 404 errors."""
+    return Response(content="", media_type="image/x-icon")
 
 
 @app.get("/health")

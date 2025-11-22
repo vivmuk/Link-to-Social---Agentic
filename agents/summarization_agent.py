@@ -22,12 +22,54 @@ class SummarizationAgent:
         if not self.api_key or self.api_key.strip() == "":
             logger.warning("Venice API key is not set. Please set VENICE_API_KEY environment variable.")
     
-    async def generate_posts(self, url: str) -> Dict[str, Any]:
+    async def generate_posts_from_text(self, article_text: str) -> Dict[str, Any]:
+        """
+        Generate LinkedIn and X/Twitter posts directly from article text.
+        
+        Args:
+            article_text: Full article text content
+        
+        Returns:
+            Dictionary with linkedin_post, twitter_post, article metadata, and key_insights
+        """
+        # Create prompt for management consulting style using direct text
+        prompt = self._create_consulting_prompt_from_text(article_text)
+        
+        try:
+            # Call Venice.ai API without web scraping (using direct text)
+            response = await self._call_venice_api_direct(prompt)
+            
+            if response:
+                # Parse the JSON response
+                posts = self._parse_response(response)
+                return {
+                    "status": "success",
+                    "linkedin_post": posts.get("linkedin_post", ""),
+                    "twitter_post": posts.get("twitter_post", ""),
+                    "key_insights": posts.get("key_insights", []),
+                    "article_title": posts.get("article_title", ""),
+                    "article_author": posts.get("article_author"),
+                    "article_date": posts.get("article_date")
+                }
+            else:
+                raise Exception("Empty response from API")
+                
+        except Exception as e:
+            logger.error(f"Error generating posts from text: {str(e)}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "linkedin_post": None,
+                "twitter_post": None
+            }
+    
+    async def generate_posts(self, url: str, use_web_scraping: bool = True) -> Dict[str, Any]:
         """
         Generate LinkedIn and X/Twitter posts directly from a URL using Venice.ai's web scraping.
         
         Args:
             url: Article URL to scrape and process
+            use_web_scraping: Whether to enable web scraping (default: True)
         
         Returns:
             Dictionary with linkedin_post, twitter_post, article metadata, and key_insights
@@ -63,6 +105,52 @@ class SummarizationAgent:
                 "linkedin_post": None,
                 "twitter_post": None
             }
+    
+    def _create_consulting_prompt_from_text(self, article_text: str) -> str:
+        """Create a professional consulting-style prompt using direct article text."""
+        return f"""You are a senior management consultant creating social media content for a prestigious consulting firm. Your writing style is:
+- Professional yet approachable
+- Data-driven and insight-focused
+- Clear and concise
+- Thought-provoking
+- Uses business terminology appropriately
+
+Please analyze the following article text:
+
+{article_text[:5000]}
+
+Generate TWO social media posts based on this article:
+
+1. LinkedIn Post (3-5 sentences):
+   - Start with a hook that captures attention
+   - Include 2-3 key insights or takeaways
+   - End with a thought-provoking question or call to action
+   - Format: Professional, engaging, suitable for B2B audience
+   - Length: 150-300 characters
+
+2. X/Twitter Post (under 280 characters):
+   - Punchy and engaging
+   - Include 1-2 key insights
+   - Use strategic line breaks for readability
+   - May include emojis sparingly (max 2)
+   - Include a call to action or question
+
+3. Extract 3-5 key insights as a JSON array
+
+4. Extract article metadata:
+   - title: Article title (extract from text or infer)
+   - author: Author name (if available, otherwise null)
+   - date: Publication date (if available, otherwise null)
+
+Return your response as a JSON object with this exact structure:
+{{
+  "linkedin_post": "Your LinkedIn post text here",
+  "twitter_post": "Your X/Twitter post text here",
+  "key_insights": ["Insight 1", "Insight 2", "Insight 3"],
+  "article_title": "Article Title",
+  "article_author": "Author Name or null",
+  "article_date": "Publication Date or null"
+}}"""
     
     def _create_consulting_prompt(self, url: str) -> str:
         """Create a professional consulting-style prompt that includes the URL for Venice.ai web scraping."""
@@ -227,6 +315,117 @@ Return your response as a JSON object with this exact structure:
         except asyncio.TimeoutError:
             logger.error("Venice API request timed out")
             raise Exception("Request timed out. The URL might be too complex or Venice API is experiencing delays.")
+    
+    async def _call_venice_api_direct(self, prompt: str) -> str:
+        """Call Venice.ai API for text generation without web scraping (using direct text)."""
+        if not self.api_key or self.api_key.strip() == "":
+            raise Exception("Venice API key is not configured. Please set VENICE_API_KEY environment variable.")
+        
+        url = f"{self.base_url}/chat/completions"
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert social media content creator for management consulting firms. You create professional, insight-driven content that engages business executives and thought leaders."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "temperature": self.temperature,
+            "max_completion_tokens": 1500,
+            "venice_parameters": {
+                "enable_web_scraping": False,  # No web scraping for direct text
+                "include_venice_system_prompt": True
+            },
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "type": "object",
+                    "properties": {
+                        "linkedin_post": {
+                            "type": "string",
+                            "description": "LinkedIn post text (3-5 sentences)"
+                        },
+                        "twitter_post": {
+                            "type": "string",
+                            "description": "X/Twitter post text (under 280 characters)"
+                        },
+                        "key_insights": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of 3-5 key insights"
+                        },
+                        "article_title": {
+                            "type": "string",
+                            "description": "Article title extracted from the text"
+                        },
+                        "article_author": {
+                            "type": "string",
+                            "nullable": True,
+                            "description": "Article author if available, otherwise null"
+                        },
+                        "article_date": {
+                            "type": "string",
+                            "nullable": True,
+                            "description": "Publication date if available, otherwise null"
+                        }
+                    },
+                    "required": ["linkedin_post", "twitter_post", "key_insights", "article_title"]
+                }
+            }
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=120)) as response:
+                    response_text = await response.text()
+                    
+                    if response.status == 200:
+                        try:
+                            data = json.loads(response_text)
+                            if "choices" in data and len(data["choices"]) > 0:
+                                return data["choices"][0]["message"]["content"]
+                            else:
+                                raise Exception("Invalid response format from Venice API")
+                        except json.JSONDecodeError:
+                            raise Exception(f"Invalid JSON response from Venice API: {response_text[:200]}")
+                    else:
+                        logger.error(f"Venice API error {response.status}: {response_text}")
+                        error_msg = response_text
+                        try:
+                            error_json = json.loads(response_text)
+                            if isinstance(error_json, dict) and "error" in error_json:
+                                error_obj = error_json["error"]
+                                if isinstance(error_obj, dict):
+                                    error_msg = error_obj.get("message", str(error_obj))
+                                else:
+                                    error_msg = str(error_obj)
+                        except:
+                            pass
+                        
+                        if response.status == 401:
+                            raise Exception("Venice API authentication failed. Please check your API key.")
+                        elif response.status == 402:
+                            raise Exception("Venice API payment required. Please check your account balance.")
+                        elif response.status == 429:
+                            raise Exception("Venice API rate limit exceeded. Please try again later.")
+                        else:
+                            raise Exception(f"Venice API error {response.status}: {error_msg}")
+        except aiohttp.ClientError as e:
+            logger.error(f"Network error calling Venice API: {str(e)}")
+            raise Exception(f"Network error: Unable to connect to Venice API. {str(e)}")
+        except asyncio.TimeoutError:
+            logger.error("Venice API request timed out")
+            raise Exception("Request timed out. Please try again later.")
     
     async def _call_venice_api_fallback(self, prompt: str, article_url: str) -> str:
         """Fallback: Call Venice API without web scraping, just analyze the URL."""

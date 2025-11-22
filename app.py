@@ -35,9 +35,11 @@ app.add_middleware(
 coordinator = Coordinator()
 
 
-class URLRequest(BaseModel):
-    """Request model for URL processing."""
-    url: HttpUrl
+class ProcessRequest(BaseModel):
+    """Request model for processing articles (URL or direct text)."""
+    url: Optional[HttpUrl] = None
+    article_text: Optional[str] = None
+    use_web_scraping: bool = False  # Whether to use web scraping when URL is provided
 
 
 class ProcessingStatus(BaseModel):
@@ -218,7 +220,7 @@ async def root():
                 text-transform: uppercase;
                 letter-spacing: 0.05em;
             }
-            input[type="url"] {
+            input[type="url"], textarea {
                 width: 100%;
                 padding: 1rem 1.25rem;
                 border: 2px solid var(--border-color);
@@ -229,13 +231,17 @@ async def root():
                 transition: all 0.2s;
                 background: var(--bg-white);
             }
-            input[type="url"]:focus {
+            input[type="url"]:focus, textarea:focus {
                 outline: none;
                 border-color: var(--accent-blue);
                 box-shadow: 0 0 0 3px rgba(44, 95, 141, 0.1);
             }
-            input[type="url"]::placeholder {
+            input[type="url"]::placeholder, textarea::placeholder {
                 color: var(--text-light);
+            }
+            textarea {
+                resize: vertical;
+                line-height: 1.6;
             }
             .btn-primary {
                 width: 100%;
@@ -475,6 +481,112 @@ async def root():
                 display: block;
                 margin-bottom: 0.5rem;
             }
+            .workflow-tracker {
+                margin-top: 2rem;
+                margin-bottom: 3rem;
+                background: var(--bg-white);
+                border-radius: 12px;
+                padding: 2rem;
+                box-shadow: var(--shadow-md);
+                border: 1px solid var(--border-color);
+                display: none;
+            }
+            .workflow-tracker.active {
+                display: block;
+            }
+            .workflow-tracker h3 {
+                font-family: 'Playfair Display', serif;
+                font-size: 1.75rem;
+                font-weight: 700;
+                color: var(--primary-navy);
+                margin-bottom: 1.5rem;
+                padding-bottom: 1rem;
+                border-bottom: 2px solid var(--primary-gold);
+            }
+            .audit-entry {
+                background: var(--bg-light);
+                border-radius: 8px;
+                padding: 1.5rem;
+                margin-bottom: 1.5rem;
+                border-left: 4px solid var(--primary-gold);
+                transition: all 0.2s;
+            }
+            .audit-entry:hover {
+                box-shadow: var(--shadow-sm);
+                transform: translateX(4px);
+            }
+            .audit-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                margin-bottom: 1rem;
+                flex-wrap: wrap;
+                gap: 1rem;
+            }
+            .audit-agent {
+                font-weight: 600;
+                color: var(--primary-navy);
+                font-size: 1.125rem;
+            }
+            .audit-status {
+                padding: 0.25rem 0.75rem;
+                border-radius: 4px;
+                font-size: 0.75rem;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+            }
+            .audit-status.success {
+                background: #c6f6d5;
+                color: #22543d;
+            }
+            .audit-status.error {
+                background: #fed7d7;
+                color: #742a2a;
+            }
+            .audit-meta {
+                font-size: 0.875rem;
+                color: var(--text-light);
+                margin-top: 0.5rem;
+            }
+            .audit-section {
+                margin-top: 1rem;
+            }
+            .audit-section-title {
+                font-weight: 600;
+                color: var(--text-dark);
+                margin-bottom: 0.5rem;
+                font-size: 0.875rem;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+            }
+            .audit-data {
+                background: white;
+                border: 1px solid var(--border-color);
+                border-radius: 6px;
+                padding: 1rem;
+                font-family: 'Courier New', monospace;
+                font-size: 0.875rem;
+                color: var(--text-dark);
+                max-height: 100px;
+                overflow-y: auto;
+                white-space: pre-wrap;
+                word-wrap: break-word;
+                transition: max-height 0.3s;
+            }
+            .audit-data.expanded {
+                max-height: 500px;
+            }
+            .audit-toggle {
+                color: var(--accent-blue);
+                cursor: pointer;
+                font-size: 0.875rem;
+                margin-top: 0.5rem;
+                display: inline-block;
+            }
+            .audit-toggle:hover {
+                text-decoration: underline;
+            }
             .diagram-container {
                 width: 100%;
                 max-width: 100%;
@@ -602,11 +714,42 @@ async def root():
             <div class="content-container">
                 <div class="card">
                     <h2 class="card-title">Article Processing</h2>
-                    <form id="urlForm">
+                    <form id="processForm">
                         <div class="form-group">
-                            <label for="url">Article URL</label>
-                            <input type="url" id="url" name="url" placeholder="https://example.com/article" required>
+                            <label>Input Method</label>
+                            <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+                                <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal; text-transform: none;">
+                                    <input type="radio" name="inputMethod" value="text" id="methodText" checked style="margin-right: 0.5rem;">
+                                    Paste Article Text
+                                </label>
+                                <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal; text-transform: none;">
+                                    <input type="radio" name="inputMethod" value="url" id="methodUrl" style="margin-right: 0.5rem;">
+                                    URL (with Web Scraping)
+                                </label>
+                            </div>
                         </div>
+                        
+                        <div class="form-group" id="textInputGroup">
+                            <label for="articleText">Article Text</label>
+                            <textarea id="articleText" name="articleText" rows="10" 
+                                placeholder="Paste the full article text here..." 
+                                style="width: 100%; padding: 1rem 1.25rem; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1rem; font-family: inherit; color: var(--text-dark); resize: vertical; min-height: 200px;"></textarea>
+                            <div style="font-size: 0.75rem; color: var(--text-light); margin-top: 0.5rem;">
+                                <span id="textLength">0</span> characters
+                            </div>
+                        </div>
+                        
+                        <div class="form-group" id="urlInputGroup" style="display: none;">
+                            <label for="url">Article URL</label>
+                            <input type="url" id="url" name="url" placeholder="https://example.com/article">
+                            <div style="margin-top: 0.75rem;">
+                                <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal; text-transform: none; font-size: 0.875rem;">
+                                    <input type="checkbox" id="enableScraping" checked style="margin-right: 0.5rem;">
+                                    Enable Venice.ai Web Scraping
+                                </label>
+                            </div>
+                        </div>
+                        
                         <button type="submit" class="btn-primary" id="submitBtn">Process Article</button>
                     </form>
 
@@ -762,6 +905,11 @@ async def root():
         </div>
 
         <div class="results" id="results">
+            <div class="workflow-tracker" id="workflowTracker">
+                <h3>📊 Agent Workflow & Audit Trail</h3>
+                <div id="auditEntries"></div>
+            </div>
+            
             <div class="result-section">
                 <h2>Social Media Posts</h2>
                 <div class="post-box">
@@ -806,50 +954,114 @@ async def root():
         <script>
             let currentResult = null;
             
-            document.getElementById('urlForm').addEventListener('submit', async (e) => {
-                e.preventDefault();
-                const url = document.getElementById('url').value;
-                const submitBtn = document.getElementById('submitBtn');
-                const loading = document.getElementById('loading');
-                const results = document.getElementById('results');
-                
-                submitBtn.disabled = true;
-                loading.classList.add('active');
-                results.classList.remove('active');
-                
-                try {
-                    const response = await fetch('/process', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({ url: url })
-                    });
+            // Handle input method toggle
+            document.querySelectorAll('input[name="inputMethod"]').forEach(radio => {
+                radio.addEventListener('change', function() {
+                    const textGroup = document.getElementById('textInputGroup');
+                    const urlGroup = document.getElementById('urlInputGroup');
+                    const textArea = document.getElementById('articleText');
+                    const urlInput = document.getElementById('url');
                     
-                    if (!response.ok) {
-                        const errorData = await response.json().catch(() => ({ detail: `HTTP ${response.status}: ${response.statusText}` }));
-                        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
-                    }
-                    
-                    const data = await response.json();
-                    
-                    if (data.status === 'success') {
-                        currentResult = data;
-                        displayResults(data);
-                        window.scrollTo({ top: document.getElementById('results').offsetTop - 100, behavior: 'smooth' });
+                    if (this.value === 'text') {
+                        textGroup.style.display = 'block';
+                        urlGroup.style.display = 'none';
+                        if (urlInput) urlInput.removeAttribute('required');
+                        if (textArea) textArea.setAttribute('required', 'required');
                     } else {
-                        showError(data.error || data.detail || 'An error occurred');
+                        textGroup.style.display = 'none';
+                        urlGroup.style.display = 'block';
+                        if (textArea) textArea.removeAttribute('required');
+                        if (urlInput) urlInput.setAttribute('required', 'required');
                     }
-                } catch (error) {
-                    console.error('Error processing URL:', error);
-                    showError('Failed to process URL: ' + (error.message || error));
-                } finally {
-                    submitBtn.disabled = false;
-                    loading.classList.remove('active');
-                }
+                });
             });
             
+            // Update character count
+            const articleTextEl = document.getElementById('articleText');
+            if (articleTextEl) {
+                articleTextEl.addEventListener('input', function() {
+                    const lengthDisplay = document.getElementById('textLength');
+                    if (lengthDisplay) {
+                        lengthDisplay.textContent = this.value.length.toLocaleString();
+                    }
+                });
+            }
+            
+            // Form submission
+            const form = document.getElementById('processForm') || document.getElementById('urlForm');
+            if (form) {
+                form.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const submitBtn = document.getElementById('submitBtn');
+                    const loading = document.getElementById('loading');
+                    const results = document.getElementById('results');
+                    
+                    submitBtn.disabled = true;
+                    loading.classList.add('active');
+                    results.classList.remove('active');
+                    
+                    try {
+                        const inputMethod = document.querySelector('input[name="inputMethod"]:checked');
+                        let requestBody = {};
+                        
+                        if (!inputMethod || inputMethod.value === 'text') {
+                            const articleText = document.getElementById('articleText')?.value.trim();
+                            if (!articleText) {
+                                throw new Error('Please paste article text');
+                            }
+                            requestBody = {
+                                article_text: articleText,
+                                use_web_scraping: false
+                            };
+                        } else {
+                            const url = document.getElementById('url')?.value.trim();
+                            if (!url) {
+                                throw new Error('Please enter a URL');
+                            }
+                            requestBody = {
+                                url: url,
+                                use_web_scraping: document.getElementById('enableScraping')?.checked || false
+                            };
+                        }
+                        
+                        const response = await fetch('/process', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify(requestBody)
+                        });
+                        
+                        if (!response.ok) {
+                            const errorData = await response.json().catch(() => ({ detail: `HTTP ${response.status}: ${response.statusText}` }));
+                            throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+                        }
+                        
+                        const data = await response.json();
+                        
+                        if (data.status === 'success') {
+                            currentResult = data;
+                            displayResults(data);
+                            if (data.audit_trail && data.audit_trail.length > 0) {
+                                displayWorkflowTracker(data.audit_trail);
+                            }
+                            window.scrollTo({ top: document.getElementById('results').offsetTop - 100, behavior: 'smooth' });
+                        } else {
+                            showError(data.error || data.detail || 'An error occurred');
+                        }
+                    } catch (error) {
+                        console.error('Error processing request:', error);
+                        showError('Failed to process: ' + (error.message || error));
+                    } finally {
+                        submitBtn.disabled = false;
+                        loading.classList.remove('active');
+                    }
+                });
+            }
+            
             function displayResults(data) {
+                const results = document.getElementById('results');
+                
                 // Display posts
                 document.getElementById('linkedinPost').textContent = data.posts.linkedin || 'No post generated';
                 document.getElementById('twitterPost').textContent = data.posts.twitter || 'No post generated';
@@ -873,6 +1085,77 @@ async def root():
                 }
                 
                 results.classList.add('active');
+            }
+            
+            function displayWorkflowTracker(auditTrail) {
+                const trackerContainer = document.getElementById('workflowTracker');
+                if (!trackerContainer) {
+                    // Create tracker container if it doesn't exist
+                    const results = document.getElementById('results');
+                    const tracker = document.createElement('div');
+                    tracker.id = 'workflowTracker';
+                    tracker.className = 'workflow-tracker active';
+                    tracker.innerHTML = '<h3>📊 Agent Workflow & Audit Trail</h3><div id="auditEntries"></div>';
+                    results.insertBefore(tracker, results.firstChild);
+                }
+                
+                const entriesContainer = document.getElementById('auditEntries');
+                if (!entriesContainer) return;
+                
+                entriesContainer.innerHTML = '';
+                
+                auditTrail.forEach((entry, index) => {
+                    const entryDiv = document.createElement('div');
+                    entryDiv.className = 'audit-entry';
+                    
+                    const statusClass = entry.status === 'success' ? 'success' : 'error';
+                    const inputPreview = JSON.stringify(entry.input, null, 2);
+                    const outputPreview = JSON.stringify(entry.output, null, 2);
+                    
+                    entryDiv.innerHTML = `
+                        <div class="audit-header">
+                            <div>
+                                <span class="audit-agent">${entry.agent} - ${entry.step}</span>
+                                <div class="audit-meta">
+                                    ${entry.timestamp} • Duration: ${entry.duration_ms?.toFixed(2) || 0}ms
+                                </div>
+                            </div>
+                            <span class="audit-status ${statusClass}">${entry.status}</span>
+                        </div>
+                        
+                        <div class="audit-section">
+                            <div class="audit-section-title">📥 Input Data</div>
+                            <div class="audit-data collapsed" id="input-${index}">${escapeHtml(inputPreview)}</div>
+                            <span class="audit-toggle" onclick="toggleAuditData('input-${index}', this)">Show Full Input</span>
+                        </div>
+                        
+                        <div class="audit-section">
+                            <div class="audit-section-title">📤 Output Data</div>
+                            <div class="audit-data collapsed" id="output-${index}">${escapeHtml(outputPreview)}</div>
+                            <span class="audit-toggle" onclick="toggleAuditData('output-${index}', this)">Show Full Output</span>
+                        </div>
+                    `;
+                    
+                    entriesContainer.appendChild(entryDiv);
+                });
+                
+                trackerContainer.classList.add('active');
+            }
+            
+            function toggleAuditData(id, toggleEl) {
+                const dataEl = document.getElementById(id);
+                if (dataEl) {
+                    dataEl.classList.toggle('expanded');
+                    toggleEl.textContent = dataEl.classList.contains('expanded') 
+                        ? 'Collapse'
+                        : 'Show Full ' + (id.startsWith('input') ? 'Input' : 'Output');
+                }
+            }
+            
+            function escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
             }
             
             function showError(message) {
@@ -908,14 +1191,36 @@ async def root():
 
 
 @app.post("/process")
-async def process_url(request: URLRequest):
-    """Process a URL and return social media content."""
+async def process_url(request: ProcessRequest):
+    """Process a URL or article text and return social media content with audit trail."""
     try:
-        url_str = str(request.url)
-        logger.info(f"Processing URL: {url_str}")
+        # Validate input
+        if not request.url and not request.article_text:
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'url' (with use_web_scraping=True) or 'article_text' must be provided"
+            )
+        
+        if request.use_web_scraping and not request.url:
+            raise HTTPException(
+                status_code=400,
+                detail="URL is required when use_web_scraping is True"
+            )
+        
+        url_str = str(request.url) if request.url else ""
+        article_text = request.article_text or ""
+        
+        if request.url:
+            logger.info(f"Processing URL: {url_str} (scraping: {request.use_web_scraping})")
+        else:
+            logger.info(f"Processing direct text (length: {len(article_text)} chars)")
         
         # Execute workflow
-        result = await coordinator.process_url(url_str)
+        result = await coordinator.process_url(
+            url=url_str,
+            article_text=article_text,
+            use_web_scraping=request.use_web_scraping
+        )
         
         if result.get("status") == "error":
             error_message = result.get("error", "Processing failed")
@@ -934,10 +1239,10 @@ async def process_url(request: URLRequest):
         logger.error(f"Validation error: {str(e)}")
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid URL format: {str(e)}"
+            detail=f"Invalid input: {str(e)}"
         )
     except Exception as e:
-        logger.error(f"Error processing URL: {str(e)}", exc_info=True)
+        logger.error(f"Error processing request: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error: {str(e)}"

@@ -1,5 +1,6 @@
 """Summarization Agent - Generates social media posts from article content."""
 import json
+import asyncio
 from typing import Dict, Any
 import aiohttp
 import logging
@@ -16,6 +17,10 @@ class SummarizationAgent:
         self.base_url = settings.venice_base_url
         self.model = settings.llm_model
         self.temperature = settings.llm_temperature
+        
+        # Validate API key
+        if not self.api_key or self.api_key.strip() == "":
+            logger.warning("Venice API key is not set. Please set VENICE_API_KEY environment variable.")
     
     async def generate_posts(self, url: str) -> Dict[str, Any]:
         """
@@ -105,6 +110,10 @@ Return your response as a JSON object with this exact structure:
     
     async def _call_venice_api(self, prompt: str, article_url: str) -> str:
         """Call Venice.ai API for text generation with web scraping enabled."""
+        # Validate API key
+        if not self.api_key or self.api_key.strip() == "":
+            raise Exception("Venice API key is not configured. Please set VENICE_API_KEY environment variable.")
+        
         url = f"{self.base_url}/chat/completions"
         
         headers = {
@@ -169,14 +178,134 @@ Return your response as a JSON object with this exact structure:
             }
         }
         
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=120)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if "choices" in data and len(data["choices"]) > 0:
+                            return data["choices"][0]["message"]["content"]
+                        else:
+                            raise Exception("Invalid response format from Venice API")
+                    else:
+                        response_text = await response.text()
+                        logger.error(f"Venice API error {response.status} for URL {article_url}: {response_text}")
+                        
+                        # Try to parse error message
+                        error_msg = response_text
+                        try:
+                            error_json = json.loads(response_text)
+                            if isinstance(error_json, dict) and "error" in error_json:
+                                error_obj = error_json["error"]
+                                if isinstance(error_obj, dict):
+                                    error_msg = error_obj.get("message", str(error_obj))
+                                else:
+                                    error_msg = str(error_obj)
+                        except:
+                            pass
+                        
+                        # Provide more helpful error messages
+                        if response.status == 401:
+                            raise Exception("Venice API authentication failed. Please check your API key is set correctly in Railway environment variables.")
+                        elif response.status == 402:
+                            raise Exception("Venice API payment required. Please check your account balance at venice.ai")
+                        elif response.status == 429:
+                            raise Exception("Venice API rate limit exceeded. Please try again in a few moments.")
+                        elif response.status == 500:
+                            # Try fallback without web scraping if inference fails
+                            logger.info("Venice API returned 500 error. Trying fallback without web scraping...")
+                            try:
+                                return await self._call_venice_api_fallback(prompt, article_url)
+                            except Exception as fallback_error:
+                                logger.error(f"Fallback also failed: {str(fallback_error)}")
+                                raise Exception(f"Venice API inference failed. Error: {error_msg}. This might be due to: 1) The URL is not accessible, 2) The article is too complex, 3) Venice API is experiencing issues. Please try a different URL or try again later.")
+                        else:
+                            raise Exception(f"Venice API error {response.status}: {error_msg}")
+        except aiohttp.ClientError as e:
+            logger.error(f"Network error calling Venice API: {str(e)}")
+            raise Exception(f"Network error: Unable to connect to Venice API. {str(e)}")
+        except asyncio.TimeoutError:
+            logger.error("Venice API request timed out")
+            raise Exception("Request timed out. The URL might be too complex or Venice API is experiencing delays.")
+    
+    async def _call_venice_api_fallback(self, prompt: str, article_url: str) -> str:
+        """Fallback: Call Venice API without web scraping, just analyze the URL."""
+        logger.info("Using fallback method without web scraping")
+        url = f"{self.base_url}/chat/completions"
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Simplified prompt without web scraping
+        fallback_prompt = f"""Based on the article URL: {article_url}
+
+Please create social media posts. Since I cannot directly access the article, please generate:
+
+1. LinkedIn Post (3-5 sentences, professional consulting style)
+2. X/Twitter Post (under 280 characters)
+3. 3-5 key insights as a JSON array
+4. Article title: Extract from URL or use "Article"
+5. Article author: null
+6. Article date: null
+
+Return as JSON with this structure:
+{{
+  "linkedin_post": "...",
+  "twitter_post": "...",
+  "key_insights": ["..."],
+  "article_title": "...",
+  "article_author": null,
+  "article_date": null
+}}"""
+        
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an expert social media content creator for management consulting firms."
+                },
+                {
+                    "role": "user",
+                    "content": fallback_prompt
+                }
+            ],
+            "temperature": self.temperature,
+            "max_completion_tokens": 1500,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "type": "object",
+                    "properties": {
+                        "linkedin_post": {"type": "string"},
+                        "twitter_post": {"type": "string"},
+                        "key_insights": {"type": "array", "items": {"type": "string"}},
+                        "article_title": {"type": "string"},
+                        "article_author": {"type": "string", "nullable": True},
+                        "article_date": {"type": "string", "nullable": True}
+                    },
+                    "required": ["linkedin_post", "twitter_post", "key_insights", "article_title"]
+                }
+            }
+        }
+        
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload) as response:
+            async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=120)) as response:
+                response_text = await response.text()
+                
                 if response.status == 200:
-                    data = await response.json()
-                    return data["choices"][0]["message"]["content"]
+                    try:
+                        data = json.loads(response_text)
+                        if "choices" in data and len(data["choices"]) > 0:
+                            return data["choices"][0]["message"]["content"]
+                        else:
+                            raise Exception("Invalid response format from Venice API")
+                    except json.JSONDecodeError:
+                        raise Exception(f"Invalid JSON response from fallback: {response_text[:200]}")
                 else:
-                    error_text = await response.text()
-                    raise Exception(f"API error {response.status}: {error_text}")
+                    raise Exception(f"Fallback API error {response.status}: {response_text}")
     
     def _parse_response(self, response_text: str) -> Dict[str, Any]:
         """Parse the API response and format posts."""

@@ -300,13 +300,22 @@ Return your response as a JSON object with this exact structure:
                         elif response.status == 429:
                             raise Exception("Venice API rate limit exceeded. Please try again in a few moments.")
                         elif response.status == 500:
-                            # Try fallback without web scraping if inference fails
-                            logger.info("Venice API returned 500 error. Trying fallback without web scraping...")
-                            try:
-                                return await self._call_venice_api_fallback(prompt, article_url)
-                            except Exception as fallback_error:
-                                logger.error(f"Fallback also failed: {str(fallback_error)}")
-                                raise Exception(f"Venice API inference failed. Error: {error_msg}. This might be due to: 1) The URL is not accessible, 2) The article is too complex, 3) Venice API is experiencing issues. Please try a different URL or try again later.")
+                            # Web scraping failed - provide helpful error message
+                            logger.error(f"Venice API web scraping failed (HTTP 500) for URL: {article_url}")
+                            logger.info("This typically means the URL cannot be accessed by Venice.ai's scraping service.")
+                            raise Exception(
+                                f"❌ Web scraping failed: Venice.ai could not access this URL.\n\n"
+                                f"**Why this happens:**\n"
+                                f"- URL requires authentication/login\n"
+                                f"- URL is behind a paywall or subscription\n"
+                                f"- URL blocks automated access (anti-bot protection)\n"
+                                f"- URL is temporarily unavailable\n\n"
+                                f"💡 **Solution:** Use the 'Paste Article Text' option instead of URL scraping:\n"
+                                f"1. Copy the full article text from the webpage\n"
+                                f"2. Select 'Paste Article Text' in the form\n"
+                                f"3. Paste the article content directly\n"
+                                f"4. This bypasses scraping and works with any content"
+                            )
                         else:
                             raise Exception(f"Venice API error {response.status}: {error_msg}")
         except aiohttp.ClientError as e:
